@@ -1,0 +1,286 @@
+(() => {
+'use strict';
+
+const STORAGE_KEY='lexibox_v1';
+const COLORS=[
+  {name:'Indigo',value:'#5b5ff0',soft:'#f0efff'},{name:'Emerald',value:'#2cb67d',soft:'#ecfbf5'},
+  {name:'Coral',value:'#f08c5a',soft:'#fff3ec'},{name:'Violet',value:'#a45de7',soft:'#f7effd'},
+  {name:'Sky',value:'#4c93ee',soft:'#edf6ff'},{name:'Rose',value:'#e45d83',soft:'#fff0f4'},
+  {name:'Teal',value:'#00a8a8',soft:'#e9fbfb'},{name:'Amber',value:'#d79a2b',soft:'#fff8e8'}
+];
+const DEFAULT_INTERVALS=[1,2,4,7,15];
+const nowISO=()=>new Date().toISOString();
+const uid=()=>`${Date.now().toString(36)}${Math.random().toString(36).slice(2,9)}`;
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const esc=(s='')=>String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+const clamp=(n,min,max)=>Math.max(min,Math.min(max,n));
+const addDays=(date,days)=>{const d=new Date(date);d.setHours(0,0,0,0);d.setDate(d.getDate()+Number(days||0));return d.toISOString()};
+const endOfToday=()=>{const d=new Date();d.setHours(23,59,59,999);return d};
+const todayKey=(d=new Date())=>{const x=new Date(d);x.setHours(0,0,0,0);return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`};
+const initials=(name='U')=>name.trim().split(/\s+/).slice(0,2).map(x=>x[0]).join('').toUpperCase()||'U';
+const colorMeta=value=>COLORS.find(c=>c.value===value)||COLORS[0];
+
+let state=loadState();
+let activeProfileId=localStorage.getItem('lexibox_active_profile')||null;
+let reviewSession=null, writingSession=null, importTargetDeckId=null;
+let dashboardScope={type:'all',mainDeckId:'',subject:''};
+
+function loadState(){
+  try{const p=JSON.parse(localStorage.getItem(STORAGE_KEY));if(p&&Array.isArray(p.profiles))return migrate(p)}catch(e){}
+  return {version:2,profiles:[]};
+}
+function migrate(data){
+  data.version=2;
+  data.profiles=(data.profiles||[]).map((p,pi)=>{
+    const oldDecks=(p.decks||[]);
+    let mainDecks=Array.isArray(p.mainDecks)?p.mainDecks:[];
+    if(!mainDecks.length&&oldDecks.length){mainDecks=[{id:`legacy_${p.id||pi}`,name:'My Learning',description:'Imported from the previous LexiBox version',color:'#5b5ff0',createdAt:p.createdAt||nowISO(),settings:{dailyNew:Number(p.settings?.dailyNew||20),dailyReview:Number(p.settings?.dailyReview||100),intervals:[...(p.settings?.intervals||DEFAULT_INTERVALS)]}}]}
+    if(!mainDecks.length)mainDecks=[];
+    mainDecks=mainDecks.map((m,i)=>({
+      id:m.id||uid(),name:m.name||`Main Deck ${i+1}`,description:m.description||'',color:m.color||COLORS[i%COLORS.length].value,createdAt:m.createdAt||nowISO(),
+      settings:{dailyNew:clamp(Number(m.settings?.dailyNew??p.settings?.dailyNew??20),0,500),dailyReview:clamp(Number(m.settings?.dailyReview??p.settings?.dailyReview??100),0,1000),intervals:[...(m.settings?.intervals||p.settings?.intervals||DEFAULT_INTERVALS)].slice(0,7).map(Number)}
+    }));
+    const fallbackMain=mainDecks[0]?.id||null;
+    const decks=oldDecks.map((d,i)=>({
+      id:d.id||uid(),mainDeckId:d.mainDeckId||fallbackMain,name:d.name||'Deck',subject:d.subject||d.language||'General',description:d.description||'',color:d.color||COLORS[i%COLORS.length].value,reverse:!!d.reverse,
+      speech:{enabled:d.speech?.enabled!==false,auto:!!d.speech?.auto,side:d.speech?.side||'front',lang:d.speech?.lang||''},createdAt:d.createdAt||nowISO(),
+      cards:(d.cards||[]).map(c=>({id:c.id||uid(),front:c.front||'',back:c.back||'',note:c.note||'',box:clamp(Number(c.box||1),1,7),createdAt:c.createdAt||nowISO(),lastReviewed:c.lastReviewed||null,nextReview:c.nextReview||addDays(new Date(),1),reviews:Number(c.reviews||0),correct:Number(c.correct||0),mastered:!!c.mastered,writingReviews:Number(c.writingReviews||0),writingCorrect:Number(c.writingCorrect||0),reviewModeReviews:Number(c.reviewModeReviews??c.reviews??0),reviewModeCorrect:Number(c.reviewModeCorrect??c.correct??0)}))
+    }));
+    return {
+      id:p.id||uid(),name:p.name||'Learner',topic:p.topic||p.language||'Learning',createdAt:p.createdAt||nowISO(),xp:Number(p.xp||0),streak:p.streak||{count:0,lastStudyDate:null,best:0},activity:p.activity||{},writingActivity:p.writingActivity||{},badges:p.badges||[],
+      settings:{intervals:[...(p.settings?.intervals||DEFAULT_INTERVALS)].slice(0,7).map(Number),dailyNew:Number(p.settings?.dailyNew||20),dailyReview:Number(p.settings?.dailyReview||100),defaultReverse:!!p.settings?.defaultReverse,hardBehavior:p.settings?.hardBehavior||'stay',easyJump:p.settings?.easyJump!==false},
+      mainDecks,decks
+    };
+  });
+  return data;
+}
+function save(){localStorage.setItem(STORAGE_KEY,JSON.stringify(state))}
+function profile(){return state.profiles.find(p=>p.id===activeProfileId)||null}
+function mainDeckById(id){return profile()?.mainDecks.find(m=>m.id===id)}
+function deckById(id){return profile()?.decks.find(d=>d.id===id)}
+function decksForMain(id){return profile()?.decks.filter(d=>d.mainDeckId===id)||[]}
+function allCards(p=profile()){
+  if(!p)return[];
+  return p.decks.flatMap(d=>d.cards.map(c=>({...c,deckId:d.id,deckName:d.name,mainDeckId:d.mainDeckId,subject:d.subject})));
+}
+function realCard(deckId,cardId){return deckById(deckId)?.cards.find(c=>c.id===cardId)}
+function isDue(c){return !c.mastered&&c.reviews>0&&new Date(c.nextReview).getTime()<=endOfToday().getTime()}
+function isNew(c){return !c.mastered&&Number(c.reviews||0)===0}
+function accuracy(cards=allCards()){const r=cards.reduce((s,c)=>s+Number(c.reviewModeReviews??c.reviews??0),0),ok=cards.reduce((s,c)=>s+Number(c.reviewModeCorrect??c.correct??0),0);return r?Math.round(ok/r*100):0}
+function mastery(cards=allCards()){return cards.length?Math.round(cards.filter(c=>c.mastered).length/cards.length*100):0}
+function writingAccuracy(cards=allCards()){const r=cards.reduce((s,c)=>s+Number(c.writingReviews||0),0),ok=cards.reduce((s,c)=>s+Number(c.writingCorrect||0),0);return r?Math.round(ok/r*100):0}
+function showToast(msg){const t=$('#toast');t.textContent=msg;t.classList.add('show');clearTimeout(showToast.timer);showToast.timer=setTimeout(()=>t.classList.remove('show'),2500)}
+function openModal(html){$('#modal').innerHTML=html;$('#modalBackdrop').classList.remove('hidden')}
+function closeModal(){$('#modalBackdrop').classList.add('hidden');$('#modal').innerHTML=''}
+function pageHead(title,sub,actions=''){return `<div class="page-head"><div><h1>${title}</h1><p>${sub}</p></div><div class="header-actions">${actions}</div></div>`}
+function dayPart(){const h=new Date().getHours();return h<12?'morning':h<18?'afternoon':'evening'}
+function statCard(label,val,icon,sub){return `<div class="stat-card"><div class="stat-top"><span>${label}</span><span class="stat-icon">${icon}</span></div><div class="stat-value">${val}</div><div class="stat-sub">${sub}</div></div>`}
+
+function boot(){bindStatic();activeProfileId&&profile()?enterApp():showWelcome()}
+function bindStatic(){
+  $('#newProfileBtn').onclick=()=>profileModal();
+  $('#modalBackdrop').onclick=e=>{if(e.target.id==='modalBackdrop')closeModal()};
+  $('#mainNav').onclick=e=>{const b=e.target.closest('[data-view]');if(b)navigate(b.dataset.view)};
+  $('#switchProfileBtn').onclick=switchProfile;
+  $('#mobileMenuBtn').onclick=()=>$('.sidebar').classList.toggle('open');
+  $('#importFileInput').onchange=handleImportFile;
+  $('#restoreFileInput').onchange=restoreBackup;
+}
+function showWelcome(){
+  $('#welcomeView').classList.remove('hidden');$('#appShell').classList.add('hidden');
+  $('#profileList').innerHTML=state.profiles.map(p=>`<div class="profile-row" data-profile="${p.id}"><span class="avatar">${esc(initials(p.name))}</span><div class="grow"><b>${esc(p.name)}</b><small>${esc(p.topic)} · ${p.mainDecks.length} Main Deck${p.mainDecks.length===1?'':'s'}</small></div><span>›</span></div>`).join('');
+  $$('[data-profile]').forEach(el=>el.onclick=()=>{activeProfileId=el.dataset.profile;localStorage.setItem('lexibox_active_profile',activeProfileId);enterApp()});
+}
+function enterApp(){const p=profile();if(!p)return showWelcome();$('#welcomeView').classList.add('hidden');$('#appShell').classList.remove('hidden');$('#profileAvatar').textContent=initials(p.name);$('#profileNameSide').textContent=p.name;$('#profileTopicSide').textContent=p.topic;$('#sideStreak').textContent=`${p.streak.count} day streak`;navigate('dashboard')}
+function navigate(view){
+  reviewSession=view==='review'?reviewSession:null;if(view!=='writing')writingSession=null;
+  $$('.view').forEach(v=>v.classList.remove('active-view'));$(`#${view}View`).classList.add('active-view');$$('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.view===view));$('.sidebar').classList.remove('open');
+  ({dashboard:renderDashboard,decks:renderDecks,review:renderReviewHome,writing:renderWritingHome,progress:renderProgress,settings:renderSettings}[view]||(()=>{}))();
+}
+
+function scopeCards(){
+  const p=profile();if(dashboardScope.type==='main')return allCards(p).filter(c=>c.mainDeckId===dashboardScope.mainDeckId);
+  if(dashboardScope.type==='subject')return allCards(p).filter(c=>c.mainDeckId===dashboardScope.mainDeckId&&c.subject===dashboardScope.subject);
+  return allCards(p);
+}
+function dashboardScopeBar(){
+  const p=profile();let select='';
+  if(dashboardScope.type==='main')select=`<select id="scopeSelect" class="select scope-select">${p.mainDecks.map(m=>`<option value="${m.id}" ${m.id===dashboardScope.mainDeckId?'selected':''}>${esc(m.name)}</option>`).join('')}</select>`;
+  if(dashboardScope.type==='subject')select=`<select id="scopeSelect" class="select scope-select">${p.mainDecks.map(m=>{const subjects=[...new Set(decksForMain(m.id).map(d=>d.subject))];return subjects.length?`<optgroup label="${esc(m.name)}">${subjects.map(subject=>{const val=encodeURIComponent(m.id)+'::'+encodeURIComponent(subject);const active=m.id===dashboardScope.mainDeckId&&subject===dashboardScope.subject;return `<option value="${val}" ${active?'selected':''}>${esc(subject)}</option>`}).join('')}</optgroup>`:''}).join('')}</select>`;
+  return `<div class="scope-bar"><div class="scope-tabs"><button class="scope-tab ${dashboardScope.type==='all'?'active':''}" data-scope="all">Overall</button><button class="scope-tab ${dashboardScope.type==='main'?'active':''}" data-scope="main">Main Deck</button><button class="scope-tab ${dashboardScope.type==='subject'?'active':''}" data-scope="subject">Subject</button></div>${select}</div>`;
+}
+function renderDashboard(){
+  const p=profile();if(dashboardScope.type==='main'&&!mainDeckById(dashboardScope.mainDeckId))dashboardScope.mainDeckId=p.mainDecks[0]?.id||'';
+  if(dashboardScope.type==='subject'){const valid=decksForMain(dashboardScope.mainDeckId).some(d=>d.subject===dashboardScope.subject);if(!valid){const firstDeck=p.decks[0];dashboardScope.mainDeckId=firstDeck?.mainDeckId||'';dashboardScope.subject=firstDeck?.subject||'';}}
+  const cards=scopeCards(),due=cards.filter(isDue),fresh=cards.filter(isNew),learned=cards.filter(c=>c.mastered).length;
+  let scopeName='All Main Decks';if(dashboardScope.type==='main')scopeName=mainDeckById(dashboardScope.mainDeckId)?.name||'Main Deck';if(dashboardScope.type==='subject')scopeName=dashboardScope.subject?`${mainDeckById(dashboardScope.mainDeckId)?.name||''} · ${dashboardScope.subject}`:'Subject'
+  $('#dashboardView').innerHTML=pageHead(`Good ${dayPart()}, ${esc(p.name.split(' ')[0])} 👋`,`Your learning snapshot — ${esc(scopeName)}.`)+dashboardScopeBar()+`
+  <div class="hero"><div class="hero-grid"><div><div class="eyebrow" style="color:#dcdcff;margin-top:0">READY TO STUDY</div><h2>${due.length+fresh.length?`${due.length} reviews · ${fresh.length} new`:'You’re all caught up!'}</h2><p>Choose a Main Deck or subject in Review to control exactly what appears in the session.</p><button class="btn" id="heroReviewBtn">Open Review</button></div><div class="hero-kpis"><div class="hero-kpi"><b>${p.streak.count}</b><small>day streak</small></div><div class="hero-kpi"><b>${p.xp}</b><small>total XP</small></div><div class="hero-kpi"><b>${mastery(cards)}%</b><small>mastered</small></div></div></div></div>
+  <div class="stats-grid">${statCard('Total cards',cards.length,'▤',scopeName)}${statCard('Due today',due.length,'◷','Scheduled reviews')}${statCard('New cards',fresh.length,'＋','Not studied yet')}${statCard('Accuracy',accuracy(cards)+'%','◎',`${learned} mastered`)}</div>
+  <div class="grid-2"><div class="panel"><div class="panel-head"><h3>${dashboardScope.type==='all'?'Main Deck overview':'Deck overview'}</h3><button class="link-btn" id="seeDecks">View all</button></div><div class="deck-mini-list">${dashboardMiniList(cards)}</div></div><div class="panel center"><div class="panel-head"><h3>Mastery</h3></div><div class="progress-ring" style="--p:${mastery(cards)}"><span>${mastery(cards)}%</span></div><div class="muted" style="font-size:11px">${learned} of ${cards.length} cards mastered</div></div></div>`;
+  $('#heroReviewBtn').onclick=()=>navigate('review');$('#seeDecks').onclick=()=>navigate('decks');
+  $$('.scope-tab').forEach(b=>b.onclick=()=>{dashboardScope.type=b.dataset.scope;if(dashboardScope.type==='main')dashboardScope.mainDeckId=p.mainDecks[0]?.id||'';if(dashboardScope.type==='subject'){const first=p.decks[0];dashboardScope.mainDeckId=first?.mainDeckId||'';dashboardScope.subject=first?.subject||'';}renderDashboard()});
+  $('#scopeSelect')?.addEventListener('change',e=>{if(dashboardScope.type==='main')dashboardScope.mainDeckId=e.target.value;else{const [mid,sub]=e.target.value.split('::');dashboardScope.mainDeckId=decodeURIComponent(mid||'');dashboardScope.subject=decodeURIComponent(sub||'');}renderDashboard()});
+}
+function dashboardMiniList(cards){
+  const p=profile();if(dashboardScope.type==='all')return p.mainDecks.length?p.mainDecks.map(m=>{const cs=cards.filter(c=>c.mainDeckId===m.id);return `<div class="deck-mini"><span class="deck-dot" style="background:${m.color}">${esc(m.name[0]||'M')}</span><div><b>${esc(m.name)}</b><small>${decksForMain(m.id).length} decks · ${cs.length} cards</small></div><span class="due-pill">${cs.filter(isDue).length} due</span></div>`}).join(''):'<div class="muted center" style="padding:25px">No Main Decks yet.</div>';
+  const ids=[...new Set(cards.map(c=>c.deckId))];return ids.length?ids.map(id=>{const d=deckById(id),cs=cards.filter(c=>c.deckId===id);return `<div class="deck-mini"><span class="deck-dot" style="background:${d.color}">${esc(d.name[0]||'D')}</span><div><b>${esc(d.name)}</b><small>${esc(d.subject)} · ${cs.length} cards</small></div><span class="due-pill">${cs.filter(isDue).length} due</span></div>`}).join(''):'<div class="muted center" style="padding:25px">No decks in this scope.</div>';
+}
+
+function renderDecks(){
+  const p=profile();
+  $('#decksView').innerHTML=pageHead('My Decks','Use Main Decks as your top-level categories, then create focused decks inside them.',`<button class="btn btn-secondary" id="newMainBtn">+ New Main Deck</button>`)+(p.mainDecks.length?`<div class="main-deck-list">${p.mainDecks.map(mainDeckSection).join('')}</div>`:`<div class="empty-state"><div class="empty-icon">🗂️</div><h3>Create your first Main Deck</h3><p>Examples: Languages, Mathematics, Physics, Professional Training.</p><button class="btn btn-primary" id="emptyMain">Create Main Deck</button></div>`);
+  $('#newMainBtn')?.addEventListener('click',()=>mainDeckModal());$('#emptyMain')?.addEventListener('click',()=>mainDeckModal());
+  $$('[data-edit-main]').forEach(b=>b.onclick=()=>mainDeckModal(b.dataset.editMain));$$('[data-new-deck]').forEach(b=>b.onclick=()=>deckModal(null,b.dataset.newDeck));$$('[data-open-deck]').forEach(b=>b.onclick=()=>manageDeck(b.dataset.openDeck));$$('[data-review-deck]').forEach(b=>b.onclick=()=>openReviewForDeck(b.dataset.reviewDeck));
+}
+function mainDeckSection(m){
+  const ds=decksForMain(m.id),cards=allCards().filter(c=>c.mainDeckId===m.id),due=cards.filter(isDue).length;
+  return `<section class="main-deck-section"><div class="main-deck-header"><span class="main-deck-icon" style="background:${m.color}">${esc(m.name[0]||'M')}</span><div class="main-deck-copy"><h2>${esc(m.name)}</h2><p>${esc(m.description||'Main category')} · ${ds.length} decks · ${cards.length} cards · ${due} due</p></div><div class="main-deck-actions"><button class="btn btn-secondary" data-edit-main="${m.id}">Settings</button><button class="btn btn-primary" data-new-deck="${m.id}">+ New deck</button></div></div>${ds.length?`<div class="deck-grid">${ds.map(deckCard).join('')}</div>`:'<div class="empty-state" style="padding:25px"><p>No decks inside this Main Deck yet.</p></div>'}</section>`;
+}
+function deckCard(d){const due=d.cards.filter(isDue).length,mastered=d.cards.filter(c=>c.mastered).length,pct=d.cards.length?Math.round(mastered/d.cards.length*100):0,cm=colorMeta(d.color);return `<div class="deck-card" style="--deck-color:${d.color};--deck-soft:${cm.soft}"><div class="deck-card-head"><span class="deck-icon" style="background:${d.color}">${esc(d.name[0]||'D')}</span><div class="grow"><h3>${esc(d.name)}</h3><p>${esc(d.subject)}${d.description?' · '+esc(d.description):''}</p></div></div><div class="deck-metrics"><div class="deck-metric"><b>${d.cards.length}</b><small>Cards</small></div><div class="deck-metric"><b>${due}</b><small>Due</small></div><div class="deck-metric"><b>${pct}%</b><small>Mastered</small></div></div><div class="bar"><span style="width:${pct}%"></span></div><div class="deck-actions"><button class="btn btn-secondary" data-open-deck="${d.id}">Manage</button><button class="btn btn-primary" data-review-deck="${d.id}">Review</button></div></div>`}
+
+function profileModal(edit=false){
+  const p=edit?profile():null;openModal(`<div class="modal-head"><h2>${edit?'Edit profile':'Create learner profile'}</h2><button class="modal-close" id="modalClose">×</button></div><div class="form-grid"><div class="field full"><label>Name</label><input id="pfName" class="input" value="${esc(p?.name||'')}" placeholder="e.g. Farshad"></div><div class="field full"><label>Main learning focus</label><input id="pfTopic" class="input" value="${esc(p?.topic||'')}" placeholder="e.g. Languages, school, professional study"></div></div><div class="modal-actions"><button class="btn btn-secondary" id="cancelModal">Cancel</button><button class="btn btn-primary" id="saveProfile">${edit?'Save changes':'Create profile'}</button></div>`);
+  $('#modalClose').onclick=$('#cancelModal').onclick=closeModal;$('#saveProfile').onclick=()=>{const name=$('#pfName').value.trim(),topic=$('#pfTopic').value.trim()||'Learning';if(!name)return showToast('Name is required.');if(edit)Object.assign(p,{name,topic});else{const np={id:uid(),name,topic,createdAt:nowISO(),xp:0,streak:{count:0,lastStudyDate:null,best:0},activity:{},writingActivity:{},badges:[],settings:{intervals:[...DEFAULT_INTERVALS],dailyNew:20,dailyReview:100,defaultReverse:false,hardBehavior:'stay',easyJump:true},mainDecks:[],decks:[]};state.profiles.push(np);activeProfileId=np.id;localStorage.setItem('lexibox_active_profile',activeProfileId)}save();closeModal();enterApp()}
+}
+function colorPicker(selected){return `<div class="color-options">${COLORS.map(c=>`<button type="button" class="color-option ${selected===c.value?'selected':''}" data-color="${c.value}"><span style="background:${c.value}"></span>${c.name}</button>`).join('')}</div>`}
+function bindColorPicker(){const buttons=$$('.color-option');buttons.forEach(b=>b.onclick=()=>{buttons.forEach(x=>x.classList.remove('selected'));b.classList.add('selected')})}
+function selectedColor(){return $('.color-option.selected')?.dataset.color||COLORS[0].value}
+function mainDeckModal(id=null){
+  const p=profile(),m=id?mainDeckById(id):null,s=m?.settings||{dailyNew:p.settings.dailyNew,dailyReview:p.settings.dailyReview,intervals:[...p.settings.intervals]};
+  openModal(`<div class="modal-head"><h2>${m?'Edit Main Deck':'Create Main Deck'}</h2><button class="modal-close" id="modalClose">×</button></div><div class="form-grid"><div class="field full"><label>Main Deck name</label><input id="mainName" class="input" value="${esc(m?.name||'')}" placeholder="e.g. Languages"></div><div class="field full"><label>Description</label><input id="mainDesc" class="input" value="${esc(m?.description||'')}" placeholder="Optional"></div><div class="field full"><label>Color</label>${colorPicker(m?.color||COLORS[0].value)}</div><div class="field"><label>New cards per review</label><input id="mainNew" class="input" type="number" min="0" max="500" value="${s.dailyNew}"></div><div class="field"><label>Due cards per review</label><input id="mainReview" class="input" type="number" min="0" max="1000" value="${s.dailyReview}"></div><div class="field full"><label>Leitner intervals (days)</label><div class="interval-grid">${s.intervals.map((v,i)=>`<div class="interval-item"><label>Box ${i+1}</label><input class="input main-interval" data-i="${i}" type="number" min="1" max="365" value="${v}"></div>`).join('')}</div></div></div><div class="modal-actions">${m?'<button class="btn btn-danger" id="deleteMain">Delete Main Deck</button>':''}<button class="btn btn-secondary" id="cancelModal">Cancel</button><button class="btn btn-primary" id="saveMain">Save</button></div>`);
+  bindColorPicker();$('#modalClose').onclick=$('#cancelModal').onclick=closeModal;
+  $('#saveMain').onclick=()=>{const name=$('#mainName').value.trim();if(!name)return showToast('Main Deck name is required.');const intervals=$$('.main-interval').map(x=>clamp(Number(x.value)||1,1,365));if(intervals.some((v,i)=>i&&v<intervals[i-1]))return showToast('Intervals should stay the same or increase.');const values={name,description:$('#mainDesc').value.trim(),color:selectedColor(),settings:{dailyNew:clamp(Number($('#mainNew').value)||0,0,500),dailyReview:clamp(Number($('#mainReview').value)||0,0,1000),intervals}};if(m)Object.assign(m,values);else p.mainDecks.push({id:uid(),...values,createdAt:nowISO()});save();closeModal();renderDecks();showToast('Main Deck saved.')};
+  if(m)$('#deleteMain').onclick=()=>{const ds=decksForMain(m.id);if(!confirm(`Delete “${m.name}” and its ${ds.length} deck(s)?`))return;p.decks=p.decks.filter(d=>d.mainDeckId!==m.id);p.mainDecks=p.mainDecks.filter(x=>x.id!==m.id);save();closeModal();renderDecks();showToast('Main Deck deleted.')}
+}
+function deckModal(deckId=null,mainDeckId=null){
+  const d=deckId?deckById(deckId):null,p=profile(),mid=d?.mainDeckId||mainDeckId||p.mainDecks[0]?.id;if(!mid)return showToast('Create a Main Deck first.');const speech=d?.speech||{enabled:true,auto:false,side:'front',lang:''};
+  openModal(`<div class="modal-head"><h2>${d?'Edit deck':'Create new deck'}</h2><button class="modal-close" id="modalClose">×</button></div><div class="form-grid"><div class="field"><label>Main Deck</label><select id="deckMain" class="select">${p.mainDecks.map(m=>`<option value="${m.id}" ${m.id===mid?'selected':''}>${esc(m.name)}</option>`).join('')}</select></div><div class="field"><label>Deck name</label><input id="deckName" class="input" value="${esc(d?.name||'')}" placeholder="e.g. Vocabulary 1"></div><div class="field full"><label>Subject</label><input id="deckSubject" class="input" value="${esc(d?.subject||'')}" placeholder="e.g. English, French, Algebra"></div><div class="field full"><label>Description</label><input id="deckDesc" class="input" value="${esc(d?.description||'')}" placeholder="Optional"></div><div class="field full"><label>Color</label>${colorPicker(d?.color||COLORS[0].value)}</div><div class="field full">${toggleSetting('deckReverse','Show back first by default','You can still reverse a session while reviewing.',!!d?.reverse)}</div><div class="field full">${toggleSetting('speechEnabled','Enable pronunciation','Uses the browser/device text-to-speech voice. No API key is required.',speech.enabled!==false)}</div><div class="field full">${toggleSetting('speechAuto','Auto-read when card opens','Speaks the selected side automatically when each card appears.',!!speech.auto)}</div><div class="field"><label>Side to pronounce automatically</label><select id="speechSide" class="select"><option value="front" ${speech.side==='front'?'selected':''}>Front</option><option value="back" ${speech.side==='back'?'selected':''}>Back</option></select></div><div class="field"><label>Voice language code (optional)</label><input id="speechLang" class="input" value="${esc(speech.lang||'')}" placeholder="e.g. en-US, fr-FR"></div></div><div class="modal-actions"><button class="btn btn-secondary" id="cancelModal">Cancel</button><button class="btn btn-primary" id="saveDeck">Save deck</button></div>`);
+  bindColorPicker();['deckReverse','speechEnabled','speechAuto'].forEach(id=>$(`[data-setting="${id}"]`).onclick=e=>toggleButton(e.currentTarget));$('#modalClose').onclick=$('#cancelModal').onclick=closeModal;
+  $('#saveDeck').onclick=()=>{const name=$('#deckName').value.trim(),subject=$('#deckSubject').value.trim();if(!name||!subject)return showToast('Deck name and Subject are required.');const values={mainDeckId:$('#deckMain').value,name,subject,description:$('#deckDesc').value.trim(),color:selectedColor(),reverse:$('[data-setting="deckReverse"]').dataset.on==='1',speech:{enabled:$('[data-setting="speechEnabled"]').dataset.on==='1',auto:$('[data-setting="speechAuto"]').dataset.on==='1',side:$('#speechSide').value,lang:$('#speechLang').value.trim()}};if(d)Object.assign(d,values);else p.decks.push({id:uid(),...values,createdAt:nowISO(),cards:[]});save();closeModal();renderDecks();showToast('Deck saved.')}
+}
+function toggleSetting(id,title,sub,on){return `<div class="toggle-row"><div class="toggle-copy"><b>${title}</b><small>${sub}</small></div><button type="button" class="toggle ${on?'on':''}" data-setting="${id}" data-on="${on?'1':'0'}"></button></div>`}
+function toggleButton(b){const on=b.dataset.on==='1';b.dataset.on=on?'0':'1';b.classList.toggle('on',!on)}
+
+function manageDeck(id){
+  const d=deckById(id),m=mainDeckById(d?.mainDeckId);if(!d)return;
+  openModal(`<div class="modal-head"><div><h2>${esc(d.name)}</h2><div class="help">${esc(m?.name||'')} · ${esc(d.subject)} · ${d.cards.length} cards</div></div><button class="modal-close" id="modalClose">×</button></div><div class="tabs"><button class="tab active" data-tab="cards">Cards</button><button class="tab" data-tab="add">Add card</button><button class="tab" data-tab="import">Import / Update CSV</button></div><div id="deckTab"></div>`);
+  $('#modalClose').onclick=closeModal;$$('.tab').forEach(t=>t.onclick=()=>{$$('.tab').forEach(x=>x.classList.remove('active'));t.classList.add('active');renderDeckTab(d,t.dataset.tab)});renderDeckTab(d,'cards')
+}
+function renderDeckTab(d,tab){
+  const root=$('#deckTab');if(!root)return;
+  if(tab==='cards'){
+    root.innerHTML=`<div class="header-actions" style="margin-bottom:12px"><button class="btn btn-secondary" id="editDeckInfo">Edit deck</button><button class="btn btn-secondary" id="exportDeckCsv">Download CSV</button><button class="btn btn-danger" id="deleteDeck">Delete deck</button></div>${d.cards.length?`<div class="card-list">${d.cards.slice().sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)).map(c=>`<div class="card-row"><div><b>${esc(c.front)}</b><small>Front</small></div><div><b>${esc(c.back)}</b><small>Back · Box ${c.box}${c.mastered?' · Mastered':''} · ID ${esc(c.id)}</small></div><button class="small-btn" data-edit-card="${c.id}">Edit</button></div>`).join('')}</div>`:'<div class="empty-state" style="padding:30px"><h3>No cards yet</h3><p>Add cards one by one or import a CSV/TSV/TXT file.</p></div>'}`;
+    $('#editDeckInfo').onclick=()=>deckModal(d.id);$('#exportDeckCsv').onclick=()=>exportDeckCSV(d);$('#deleteDeck').onclick=()=>{if(confirm(`Delete “${d.name}” and all its cards?`)){profile().decks=profile().decks.filter(x=>x.id!==d.id);save();closeModal();renderDecks();showToast('Deck deleted.')}};root.querySelectorAll('[data-edit-card]').forEach(b=>b.onclick=()=>renderCardEditor(d,b.dataset.editCard));
+  }else if(tab==='add')renderCardEditor(d);
+  else{
+    root.innerHTML=`<div class="field"><label>Bulk import / bulk update</label><div class="help">For the safest bulk edit: first click <b>Download current CSV</b>, modify Front, Back, or Note in Excel, then upload it here. Keep the <b>Card ID</b> column unchanged. Matching Card IDs are updated without changing Box, review history, due date, accuracy, or mastery.</div><div class="header-actions" style="margin-top:12px"><button class="btn btn-secondary" id="downloadTemplate">Download current CSV</button><button class="btn btn-primary" id="chooseImport">Choose CSV / TSV / TXT</button></div><div class="import-example">Card ID,Front,Back,Note\nabc123,hello,سلام,Greeting\n,new card,new answer,Blank ID creates a new card</div></div><div class="help" style="margin-top:14px">Files without Card ID are also accepted. In that case LexiBox tries to match by Front text; use the exported CSV whenever preserving history is important.</div>`;
+    $('#downloadTemplate').onclick=()=>exportDeckCSV(d);$('#chooseImport').onclick=()=>{importTargetDeckId=d.id;$('#importFileInput').value='';$('#importFileInput').click()};
+  }
+}
+function renderCardEditor(d,cardId=null,afterSave=null){
+  const c=cardId?d.cards.find(x=>x.id===cardId):null;const root=$('#deckTab')||$('#modal');
+  root.innerHTML=`<div class="form-grid"><div class="field full"><label>Front</label><textarea id="cardFront" class="textarea">${esc(c?.front||'')}</textarea></div><div class="field full"><label>Back</label><textarea id="cardBack" class="textarea">${esc(c?.back||'')}</textarea></div><div class="field full"><label>Extra note</label><textarea id="cardNote" class="textarea">${esc(c?.note||'')}</textarea></div></div><div class="modal-actions">${c?'<button class="btn btn-danger" id="deleteCard">Delete</button>':''}<button class="btn btn-primary" id="saveCard">${c?'Save changes':'Add card'}</button></div>`;
+  $('#saveCard').onclick=()=>{const front=$('#cardFront').value.trim(),back=$('#cardBack').value.trim();if(!front||!back)return showToast('Front and back are required.');if(c)Object.assign(c,{front,back,note:$('#cardNote').value.trim()});else d.cards.push(newCard(front,back,$('#cardNote').value.trim()));save();showToast(c?'Card updated.':'Card added.');afterSave?afterSave():renderDeckTab(d,'cards')};
+  if(c)$('#deleteCard').onclick=()=>{if(confirm('Delete this card?')){d.cards=d.cards.filter(x=>x.id!==c.id);save();afterSave?afterSave():renderDeckTab(d,'cards')}}
+}
+function newCard(front,back,note=''){return {id:uid(),front,back,note,box:1,createdAt:nowISO(),lastReviewed:null,nextReview:addDays(new Date(),1),reviews:0,correct:0,mastered:false,writingReviews:0,writingCorrect:0,reviewModeReviews:0,reviewModeCorrect:0}}
+function csvCell(v){const s=String(v??'');return /[",\n\r]/.test(s)?`"${s.replace(/"/g,'""')}"`:s}
+function exportDeckCSV(d){const rows=[['Card ID','Front','Back','Note'],...d.cards.map(c=>[c.id,c.front,c.back,c.note])];downloadText(`${safeName(d.name)}-cards.csv`,rows.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8');showToast('Deck CSV downloaded.')}
+function safeName(s){return String(s||'deck').replace(/[\\/:*?"<>|]+/g,'-').replace(/\s+/g,' ').trim()}
+function downloadText(name,text,type){const blob=new Blob(['\uFEFF'+text],{type}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
+function detectSep(line){return ['\t',';',',','|'].map(s=>[s,(line.match(new RegExp(s==='|'?'\\|':s==='\t'?'\\t':s,'g'))||[]).length]).sort((a,b)=>b[1]-a[1])[0][0]}
+function parseLine(line,sep){const out=[];let cur='',q=false;for(let i=0;i<line.length;i++){const ch=line[i];if(ch==='"'){if(q&&line[i+1]==='"'){cur+='"';i++}else q=!q}else if(ch===sep&&!q){out.push(cur);cur=''}else cur+=ch}out.push(cur);return out.map(x=>x.trim())}
+function parseDelimited(text){
+  const lines=String(text).replace(/^\uFEFF/,'').split(/\r?\n/).filter(l=>l.trim()&&!l.trim().startsWith('#'));if(!lines.length)return[];const sep=detectSep(lines[0]),raw=lines.map(l=>parseLine(l,sep));
+  const header=raw[0].map(x=>x.toLowerCase().replace(/[^a-z]/g,''));const hasHeader=header.some(x=>['cardid','id','front','back','note'].includes(x));let start=hasHeader?1:0;
+  const idx=nameList=>header.findIndex(x=>nameList.includes(x));const idI=hasHeader?idx(['cardid','id']):-1,frontI=hasHeader?idx(['front','term','question']):0,backI=hasHeader?idx(['back','meaning','answer','definition']):1,noteI=hasHeader?idx(['note','notes','extra']):2;
+  return raw.slice(start).filter(r=>r.length>=2).map(r=>({id:idI>=0?(r[idI]||'').trim():'',front:(r[frontI]||'').trim(),back:(r[backI]||'').trim(),note:noteI>=0?(r[noteI]||'').trim():''})).filter(r=>r.front&&r.back);
+}
+function handleImportFile(e){
+  const file=e.target.files[0],d=deckById(importTargetDeckId);if(!file||!d)return;const reader=new FileReader();reader.onload=()=>{const rows=parseDelimited(reader.result);if(!rows.length)return showToast('No valid rows found.');let added=0,updated=0;rows.forEach(r=>{let old=r.id?d.cards.find(c=>c.id===r.id):null;if(!old&&!r.id)old=d.cards.find(c=>c.front.trim().toLowerCase()===r.front.toLowerCase());if(old){old.front=r.front;old.back=r.back;old.note=r.note;updated++}else{const c=newCard(r.front,r.back,r.note);if(r.id&&!d.cards.some(x=>x.id===r.id))c.id=r.id;d.cards.push(c);added++}});save();showToast(`${updated} updated · ${added} added. History preserved for matched cards.`);manageDeck(d.id)};reader.readAsText(file,'UTF-8')
+}
+
+function renderReviewHome(){
+  reviewSession=null;const p=profile();
+  $('#reviewView').innerHTML=pageHead('Review','Choose exactly what to study. New-card and review-card limits come from each Main Deck.')+reviewSelectorHTML('review');bindReviewSelector('review');
+}
+function reviewSelectorHTML(mode){
+  const p=profile();if(!p.mainDecks.length)return `<div class="empty-state"><h3>No Main Decks yet</h3><p>Create a Main Deck and at least one deck first.</p><button class="btn btn-primary" id="selectorGoDecks">Open My Decks</button></div>`;
+  const first=p.mainDecks[0],ds=decksForMain(first.id);return `<div class="review-selector"><div class="selector-grid"><div class="field"><label>Main Deck</label><select id="sessionMain" class="select">${p.mainDecks.map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div><div class="field"><label>Deck / Subject</label><select id="sessionDeck" class="select"><option value="">All decks in Main Deck</option>${ds.map(d=>`<option value="${d.id}">${esc(d.subject)} — ${esc(d.name)}</option>`).join('')}</select></div></div><div id="sessionSummary" class="review-summary"></div><div class="header-actions" style="margin-top:18px"><button class="btn btn-primary" id="startSession">${mode==='writing'?'Start writing practice':'Start review'}</button></div></div>`
+}
+function bindReviewSelector(mode){
+  $('#selectorGoDecks')?.addEventListener('click',()=>navigate('decks'));const main=$('#sessionMain'),deck=$('#sessionDeck');if(!main)return;
+  const refresh=()=>{const m=mainDeckById(main.value),ds=decksForMain(main.value);deck.innerHTML=`<option value="">All decks in Main Deck</option>${ds.map(d=>`<option value="${d.id}">${esc(d.subject)} — ${esc(d.name)}</option>`).join('')}`;updateSessionSummary(mode)};
+  main.onchange=refresh;deck.onchange=()=>updateSessionSummary(mode);refresh();$('#startSession').onclick=()=>mode==='writing'?startWriting(main.value,deck.value):startReview(main.value,deck.value)
+}
+function selectedPool(mainId,deckId){return allCards().filter(c=>c.mainDeckId===mainId&&(!deckId||c.deckId===deckId))}
+function updateSessionSummary(mode){const main=$('#sessionMain')?.value,deck=$('#sessionDeck')?.value,m=mainDeckById(main);if(!m)return;const pool=selectedPool(main,deck),due=pool.filter(isDue),fresh=pool.filter(isNew);$('#sessionSummary').innerHTML=`<span class="summary-chip">${pool.length} total</span><span class="summary-chip">${due.length} due</span><span class="summary-chip">${fresh.length} new</span><span class="summary-chip">Session limit: ${m.settings.dailyReview} review + ${m.settings.dailyNew} new</span>${mode==='writing'?'<span class="summary-chip">Writing stats tracked separately</span>':''}`}
+function openReviewForDeck(deckId){const d=deckById(deckId);navigate('review');setTimeout(()=>{if($('#sessionMain')){$('#sessionMain').value=d.mainDeckId;$('#sessionMain').dispatchEvent(new Event('change'));$('#sessionDeck').value=d.id;updateSessionSummary('review')}},0)}
+function buildSessionCards(mainId,deckId){
+  const m=mainDeckById(mainId),pool=selectedPool(mainId,deckId);if(!m)return[];const due=pool.filter(isDue).sort(sortCards).slice(0,m.settings.dailyReview),fresh=pool.filter(isNew).sort((a,b)=>new Date(a.createdAt)-new Date(b.createdAt)).slice(0,m.settings.dailyNew);return [...due,...fresh]
+}
+function sortCards(a,b){return new Date(a.nextReview)-new Date(b.nextReview)||a.box-b.box||new Date(a.createdAt)-new Date(b.createdAt)}
+function startReview(mainId,deckId=''){const cards=buildSessionCards(mainId,deckId);reviewSession={cards,current:0,mainId,deckId,flipped:false,startedAt:Date.now(),reverseOverride:null};renderReviewCard()}
+function renderReviewCard(){
+  const root=$('#reviewView'),s=reviewSession;if(!s||!s.cards.length){root.innerHTML=pageHead('Review','Nothing is currently available in the selected scope.')+`<div class="empty-state"><div class="empty-icon">✨</div><h3>No cards available</h3><p>There may be no due cards, or the Main Deck session limits may be set to zero.</p><button class="btn btn-primary" id="backReviewHome">Choose another deck</button></div>`;$('#backReviewHome').onclick=renderReviewHome;return}
+  if(s.current>=s.cards.length)return finishReviewSession();const sc=s.cards[s.current],d=deckById(sc.deckId),c=realCard(sc.deckId,sc.id),p=profile();if(!c){s.current++;return renderReviewCard()}
+  const reverse=s.reverseOverride!==null?s.reverseOverride:(d.reverse||p.settings.defaultReverse),front=reverse?c.back:c.front,back=reverse?c.front:c.back;
+  root.innerHTML=`<div class="review-layout"><div class="page-head" style="margin-bottom:18px"><div><h1>Review session</h1><p>${esc(mainDeckById(d.mainDeckId)?.name||'')} · ${esc(d.subject)} · ${esc(d.name)} · ${c.reviews?'Box '+c.box:'New card'}</p></div><div class="header-actions"><button class="btn btn-secondary" id="reverseSession">${reverse?'Back first':'Front first'}</button><button class="btn btn-secondary" id="quitReview">Quit</button></div></div><div class="review-top"><span class="review-count">${s.current+1} / ${s.cards.length}</span><div class="review-progress"><span style="width:${Math.round(s.current/s.cards.length*100)}%"></span></div><span class="review-count">${s.cards.length-s.current} left</span></div><div class="flip-wrap"><div class="flashcard ${s.flipped?'flipped':''}" id="flashcard"><div class="card-face card-front"><span class="card-label">${reverse?'BACK':'FRONT'}</span>${d.speech?.enabled!==false?'<button class="speak-btn" data-speak-side="visible">🔊</button>':''}<button class="edit-review-btn" id="editReviewCard">Edit</button><div class="card-text">${esc(front)}</div><div class="flip-hint">Click card to flip</div></div><div class="card-face card-back"><span class="card-label">${reverse?'FRONT':'BACK'}</span>${d.speech?.enabled!==false?'<button class="speak-btn" data-speak-side="visible">🔊</button>':''}<button class="edit-review-btn" id="editReviewCardBack">Edit</button><div class="card-text">${esc(back)}</div>${c.note?`<div class="card-note">${esc(c.note)}</div>`:''}<div class="flip-hint">Click card to flip back</div></div></div></div><div id="ratingWrap" class="rating-row ${s.flipped?'':'hidden'}"><button class="rating-btn again" data-rate="again">Again<small>Reset to Box 1</small></button><button class="rating-btn hard" data-rate="hard">Hard<small>Keep it close</small></button><button class="rating-btn good" data-rate="good">Good<small>Move forward</small></button><button class="rating-btn easy" data-rate="easy">Easy<small>Move faster</small></button></div></div>`;
+  $('#flashcard').onclick=e=>{if(e.target.closest('button'))return;s.flipped=!s.flipped;$('#flashcard').classList.toggle('flipped',s.flipped);$('#ratingWrap').classList.toggle('hidden',!s.flipped)};
+  $$('#ratingWrap [data-rate]').forEach(b=>b.onclick=()=>rateCard(c,d,b.dataset.rate,false));$('#quitReview').onclick=()=>{reviewSession=null;renderReviewHome()};$('#reverseSession').onclick=()=>{s.reverseOverride=!reverse;s.flipped=false;renderReviewCard()};
+  $('#editReviewCard').onclick=$('#editReviewCardBack').onclick=()=>editCardDuringReview(d,c,renderReviewCard);$$('[data-speak-side]').forEach(b=>b.onclick=e=>{e.stopPropagation();const side=s.flipped?back:front;speakText(side,d.speech?.lang)});
+  if(d.speech?.enabled!==false&&d.speech?.auto){const configured=d.speech.side==='back'?c.back:c.front;setTimeout(()=>speakText(configured,d.speech.lang),150)}
+}
+function editCardDuringReview(d,c,returnFn){
+  openModal(`<div class="modal-head"><h2>Edit card during study</h2><button class="modal-close" id="modalClose">×</button></div><div id="deckTab"></div>`);$('#modalClose').onclick=()=>{closeModal();returnFn()};renderCardEditor(d,c.id,()=>{closeModal();returnFn()})
+}
+function speakText(text,lang=''){if(!('speechSynthesis'in window))return showToast('Text-to-speech is not supported by this browser.');window.speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(String(text));if(lang)u.lang=lang;window.speechSynthesis.speak(u)}
+function rateCard(c,d,rating,isWriting){
+  const p=profile(),m=mainDeckById(d.mainDeckId),intervals=m?.settings.intervals||p.settings.intervals,max=intervals.length;c.reviews++;if(!isWriting)c.reviewModeReviews=Number(c.reviewModeReviews||0)+1;c.lastReviewed=nowISO();
+  if(rating==='again'){c.box=1;c.mastered=false;c.nextReview=addDays(new Date(),intervals[0]);award(2,false,isWriting)}
+  if(rating==='hard'){if(p.settings.hardBehavior==='back')c.box=Math.max(1,c.box-1);c.mastered=false;c.nextReview=addDays(new Date(),Math.max(1,Math.ceil(intervals[c.box-1]*.7)));c.correct++;if(!isWriting)c.reviewModeCorrect=Number(c.reviewModeCorrect||0)+1;award(4,true,isWriting)}
+  if(rating==='good'){c.correct++;if(!isWriting)c.reviewModeCorrect=Number(c.reviewModeCorrect||0)+1;if(c.box>=max){c.mastered=true;c.nextReview=addDays(new Date(),intervals[max-1])}else{c.box++;c.nextReview=addDays(new Date(),intervals[c.box-1])}award(8,true,isWriting)}
+  if(rating==='easy'){c.correct++;if(!isWriting)c.reviewModeCorrect=Number(c.reviewModeCorrect||0)+1;const jump=p.settings.easyJump?2:1;if(c.box+jump>max){c.box=max;c.mastered=true;c.nextReview=addDays(new Date(),intervals[max-1])}else{c.box+=jump;c.nextReview=addDays(new Date(),intervals[c.box-1])}award(12,true,isWriting)}
+  save();if(isWriting){writingSession.current++;writingSession.typed='';writingSession.checked=false;renderWritingCard()}else{reviewSession.current++;reviewSession.flipped=false;renderReviewCard()}
+}
+function award(xp,success,isWriting=false){const p=profile(),key=todayKey();p.xp+=xp;if(isWriting)p.writingActivity[key]=(p.writingActivity[key]||0)+1;else p.activity[key]=(p.activity[key]||0)+1;updateStreak(p,key);checkBadges(p);$('#sideStreak').textContent=`${p.streak.count} day streak`}
+function updateStreak(p,key){if(p.streak.lastStudyDate===key)return;if(!p.streak.lastStudyDate)p.streak.count=1;else{const last=new Date(p.streak.lastStudyDate+'T00:00:00'),cur=new Date(key+'T00:00:00'),diff=Math.round((cur-last)/86400000);p.streak.count=diff===1?p.streak.count+1:1}p.streak.lastStudyDate=key;p.streak.best=Math.max(p.streak.best,p.streak.count)}
+function checkBadges(p){const total=Object.values(p.activity).reduce((a,b)=>a+b,0)+Object.values(p.writingActivity).reduce((a,b)=>a+b,0),defs=[['first',total>=1],['ten',total>=10],['hundred',total>=100],['streak3',p.streak.best>=3],['streak7',p.streak.best>=7],['xp500',p.xp>=500],['master10',allCards(p).filter(c=>c.mastered).length>=10]];defs.forEach(([id,ok])=>{if(ok&&!p.badges.includes(id))p.badges.push(id)})}
+function finishReviewSession(){const count=reviewSession.cards.length,mins=Math.max(1,Math.round((Date.now()-reviewSession.startedAt)/60000));reviewSession=null;$('#reviewView').innerHTML=`<div class="review-layout"><div class="empty-state"><div class="empty-icon">🏆</div><h3>Session complete</h3><p>You studied ${count} cards in about ${mins} minute${mins===1?'':'s'}.</p><button class="btn btn-primary" id="doneReview">Back to dashboard</button></div></div>`;$('#doneReview').onclick=()=>navigate('dashboard')}
+
+function renderWritingHome(){writingSession=null;$('#writingView').innerHTML=pageHead('Writing Practice','A separate typing practice mode using cards from your decks. Results are tracked separately in Progress.')+reviewSelectorHTML('writing');bindReviewSelector('writing')}
+function startWriting(mainId,deckId=''){const cards=buildSessionCards(mainId,deckId);writingSession={cards,current:0,mainId,deckId,reverseOverride:null,typed:'',checked:false,startedAt:Date.now()};renderWritingCard()}
+function shouldBlank(ch){return /[\p{L}\p{N}]/u.test(ch)}
+function answerSlots(answer,typed='',checked=false){
+  let ti=0;return [...answer].map(ch=>{if(ch===' ')return '<span class="slot-space">&nbsp;</span>';if(!shouldBlank(ch))return `<span class="slot-char slot-fixed">${esc(ch)}</span>`;const val=typed[ti++]||'';let cls=val?'slot-filled':'slot-empty';if(checked&&val)cls=val.toLocaleLowerCase()===ch.toLocaleLowerCase()?'slot-right':'slot-wrong';return `<span class="slot-char ${cls}">${val?esc(val):'_'}</span>`}).join('')
+}
+function onlyAnswerChars(s){return [...String(s)].filter(shouldBlank).join('')}
+function normalizeAnswer(s){return [...String(s)].filter(shouldBlank).join('').toLocaleLowerCase()}
+function renderWritingCard(){
+  const root=$('#writingView'),s=writingSession;if(!s||!s.cards.length){root.innerHTML=pageHead('Writing Practice','No cards are available in the selected scope.')+`<div class="empty-state"><h3>No cards available</h3><p>Try another deck or increase the Main Deck limits.</p><button class="btn btn-primary" id="backWriting">Choose another deck</button></div>`;$('#backWriting').onclick=renderWritingHome;return}if(s.current>=s.cards.length)return finishWritingSession();
+  const sc=s.cards[s.current],d=deckById(sc.deckId),c=realCard(sc.deckId,sc.id);if(!c){s.current++;return renderWritingCard()}const reverse=s.reverseOverride!==null?s.reverseOverride:d.reverse,prompt=reverse?c.back:c.front,answer=reverse?c.front:c.back,target=onlyAnswerChars(answer),isCorrect=s.checked&&normalizeAnswer(s.typed)===normalizeAnswer(answer);
+  root.innerHTML=`<div class="review-layout"><div class="page-head" style="margin-bottom:18px"><div><h1>Writing Practice</h1><p>${esc(mainDeckById(d.mainDeckId)?.name||'')} · ${esc(d.subject)} · ${esc(d.name)}</p></div><div class="header-actions"><button class="btn btn-secondary" id="reverseWriting">${reverse?'Back first':'Front first'}</button><button class="btn btn-secondary" id="quitWriting">Quit</button></div></div><div class="review-top"><span class="review-count">${s.current+1} / ${s.cards.length}</span><div class="review-progress"><span style="width:${Math.round(s.current/s.cards.length*100)}%"></span></div><span class="review-count">${s.cards.length-s.current} left</span></div><div class="writing-card"><div class="writing-prompt"><span class="label">PROMPT</span><h2>${esc(prompt)}</h2>${d.speech?.enabled!==false?'<button class="btn btn-secondary" id="speakWriting">🔊 Pronounce prompt</button>':''}</div><div id="writingSlots" class="writing-slots" title="Click and type">${answerSlots(answer,s.typed,s.checked)}</div><input id="writingInput" class="writing-hidden-input" autocomplete="off" spellcheck="false" value="${esc(s.typed)}" maxlength="${target.length}">${s.checked?`<div class="writing-result ${isCorrect?'ok':'bad'}">${isCorrect?'Correct — this card will move forward.':`Not correct yet. Expected answer: ${esc(answer)}`}</div>`:''}<div class="writing-actions">${s.checked?`<button class="btn ${isCorrect?'btn-success':'btn-danger'}" id="writingNext">${isCorrect?'Continue':'Mark Again & Continue'}</button>`:'<button class="btn btn-primary" id="checkWriting">Check answer</button>'}<button class="btn btn-secondary" id="editWritingCard">Edit card</button></div></div></div>`;
+  const input=$('#writingInput'),focus=()=>{input.focus()};$('#writingSlots').onclick=focus;setTimeout(focus,80);input.oninput=()=>{s.typed=onlyAnswerChars(input.value).slice(0,target.length);input.value=s.typed;$('#writingSlots').innerHTML=answerSlots(answer,s.typed,false)};
+  $('#checkWriting')?.addEventListener('click',()=>{s.checked=true;renderWritingCard()});$('#writingNext')?.addEventListener('click',()=>{c.writingReviews++;if(isCorrect)c.writingCorrect++;save();rateCard(c,d,isCorrect?'good':'again',true)});$('#editWritingCard').onclick=()=>editCardDuringReview(d,c,renderWritingCard);$('#quitWriting').onclick=renderWritingHome;$('#reverseWriting').onclick=()=>{s.reverseOverride=!reverse;s.typed='';s.checked=false;renderWritingCard()};$('#speakWriting')?.addEventListener('click',()=>speakText(prompt,d.speech?.lang));
+}
+function finishWritingSession(){const count=writingSession.cards.length;writingSession=null;$('#writingView').innerHTML=`<div class="review-layout"><div class="empty-state"><div class="empty-icon">✍️</div><h3>Writing practice complete</h3><p>You completed ${count} writing cards. Writing accuracy is tracked separately under Progress.</p><button class="btn btn-primary" id="doneWriting">Open Progress</button></div></div>`;$('#doneWriting').onclick=()=>navigate('progress')}
+
+function renderProgress(){
+  const p=profile(),cards=allCards(),intervals=p.settings.intervals,total=Math.max(1,cards.length),icons={first:'🌱',ten:'⚡',hundred:'💯',streak3:'🔥',streak7:'🏅',xp500:'⭐',master10:'🧠'},names={first:'First Step',ten:'Getting Started',hundred:'Century',streak3:'3-Day Spark',streak7:'Week Warrior',xp500:'XP Explorer',master10:'Memory Builder'};
+  const reviewDays=[],writeDays=[];for(let i=27;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);const k=todayKey(d),rv=p.activity[k]||0,wv=p.writingActivity[k]||0;reviewDays.push(activityCell(k,rv));writeDays.push(activityCell(k,wv))}
+  $('#progressView').innerHTML=pageHead('Progress','Review and writing-practice results are shown separately.')+`<div class="stats-grid">${statCard('Current streak',p.streak.count+' days','🔥',`Best: ${p.streak.best}`)}${statCard('Total XP',p.xp,'★','All study modes')}${statCard('Review accuracy',accuracy(cards)+'%','◎','Card recall')}${statCard('Writing accuracy',writingAccuracy(cards)+'%','✎','Typed answers')}</div><div class="progress-split"><div class="panel"><h3 class="progress-section-title">Review activity · 28 days</h3><div class="activity-grid">${reviewDays.join('')}</div></div><div class="panel"><h3 class="progress-section-title">Writing activity · 28 days</h3><div class="activity-grid">${writeDays.join('')}</div></div></div><div class="grid-2" style="margin-top:20px"><div class="panel"><div class="panel-head"><h3>Leitner distribution</h3></div><div class="box-bars">${intervals.map((_,i)=>{const n=cards.filter(c=>!c.mastered&&c.box===i+1).length;return `<div class="box-bar-row"><span>Box ${i+1}</span><div class="box-bar-track"><span style="width:${n/total*100}%"></span></div><b>${n}</b></div>`}).join('')}<div class="box-bar-row"><span>Done</span><div class="box-bar-track"><span style="width:${cards.filter(c=>c.mastered).length/total*100}%"></span></div><b>${cards.filter(c=>c.mastered).length}</b></div></div></div><div class="panel"><div class="panel-head"><h3>Badges</h3></div><div class="badge-grid">${Object.keys(names).map(id=>`<div class="badge-card ${p.badges.includes(id)?'':'locked'}"><div class="badge-icon">${icons[id]}</div><b>${names[id]}</b><small>${p.badges.includes(id)?'Unlocked':'Keep learning'}</small></div>`).join('')}</div></div></div>`
+}
+function activityCell(k,v){const l=v===0?'':v<5?'l1':v<10?'l2':v<20?'l3':'l4';return `<div class="activity-cell ${l}" title="${k}: ${v}"></div>`}
+
+function renderSettings(){
+  const p=profile(),s=p.settings;
+  $('#settingsView').innerHTML=pageHead('Settings','Global preferences plus per–Main Deck study limits.')+`<div class="settings-grid"><div class="setting-card"><h3>Profile</h3><div class="field"><label>Name</label><div class="input">${esc(p.name)}</div></div><div class="field" style="margin-top:10px"><label>Main learning focus</label><div class="input">${esc(p.topic)}</div></div><button class="btn btn-secondary" id="editProfile" style="margin-top:14px">Edit profile</button></div><div class="setting-card"><h3>Global review behavior</h3>${toggleSetting('defaultReverse','Show back first by default','Individual decks can override this.',s.defaultReverse)}${toggleSetting('easyJump','Easy jumps two boxes','Makes easy cards progress faster.',s.easyJump)}<div class="field" style="margin-top:12px"><label>Hard answer behavior</label><select id="hardBehavior" class="select"><option value="stay" ${s.hardBehavior==='stay'?'selected':''}>Stay in same box</option><option value="back" ${s.hardBehavior==='back'?'selected':''}>Move back one box</option></select></div><button class="btn btn-primary" id="saveGlobal" style="margin-top:14px">Save behavior</button></div><div class="setting-card"><h3>Main Deck study settings</h3><p class="help">Each Main Deck controls its own new-card limit, due-card limit, and Leitner intervals.</p><div class="main-setting-list">${p.mainDecks.length?p.mainDecks.map(m=>`<div class="main-setting-row"><span class="dot" style="background:${m.color}"></span><div><b>${esc(m.name)}</b><small>${m.settings.dailyNew} new + ${m.settings.dailyReview} review · intervals ${m.settings.intervals.join(', ')}</small></div><button class="small-btn" data-main-settings="${m.id}">Edit</button></div>`).join(''):'<div class="help">No Main Decks yet.</div>'}</div></div><div class="setting-card"><h3>Pronunciation</h3><p class="help">Pronunciation uses your browser/device Web Speech voice. It requires no paid service or API key. Available voices and accent quality depend on the device and browser. Configure automatic reading, side, and optional language code inside each deck.</p></div><div class="setting-card"><h3>Data & backup</h3><p class="help">All data is stored in this browser. Export a JSON backup before clearing browser data or changing devices.</p><div class="header-actions"><button class="btn btn-secondary" id="exportBackup">Export backup</button><button class="btn btn-secondary" id="importBackup">Restore backup</button></div></div><div class="setting-card danger-zone"><h3>Danger zone</h3><p class="help">Delete this profile and all Main Decks, decks, cards, history, writing statistics, XP, and settings.</p><button class="btn btn-danger" id="deleteProfile">Delete profile</button></div></div>`;
+  $('#editProfile').onclick=()=>profileModal(true);['defaultReverse','easyJump'].forEach(id=>$(`[data-setting="${id}"]`).onclick=e=>toggleButton(e.currentTarget));$('#saveGlobal').onclick=()=>{s.defaultReverse=$('[data-setting="defaultReverse"]').dataset.on==='1';s.easyJump=$('[data-setting="easyJump"]').dataset.on==='1';s.hardBehavior=$('#hardBehavior').value;save();showToast('Global behavior saved.')};$$('[data-main-settings]').forEach(b=>b.onclick=()=>mainDeckModal(b.dataset.mainSettings));$('#exportBackup').onclick=exportBackup;$('#importBackup').onclick=()=>{$('#restoreFileInput').value='';$('#restoreFileInput').click()};$('#deleteProfile').onclick=()=>{if(confirm(`Delete profile “${p.name}”?`)){state.profiles=state.profiles.filter(x=>x.id!==p.id);save();localStorage.removeItem('lexibox_active_profile');activeProfileId=null;showWelcome()}}
+}
+function exportBackup(){downloadText(`lexibox-v1-backup-${todayKey()}.json`,JSON.stringify(state,null,2),'application/json');showToast('Backup exported.')}
+function restoreBackup(e){const file=e.target.files[0];if(!file)return;const r=new FileReader();r.onload=()=>{try{const data=JSON.parse(r.result);if(!data||!Array.isArray(data.profiles))throw new Error();if(!confirm('Restore this backup? Current browser data will be replaced.'))return;state=migrate(data);save();activeProfileId=state.profiles[0]?.id||null;if(activeProfileId)localStorage.setItem('lexibox_active_profile',activeProfileId);else localStorage.removeItem('lexibox_active_profile');activeProfileId?enterApp():showWelcome();showToast('Backup restored.')}catch(err){showToast('That backup file is not valid.')}};r.readAsText(file)}
+function switchProfile(){localStorage.removeItem('lexibox_active_profile');activeProfileId=null;showWelcome()}
+
+boot();
+})();

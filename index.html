@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#5b5ff0" />
+  <title>LexiBox V1 — Smart Leitner Learning</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="toast" class="toast" aria-live="polite"></div>
+
+  <section id="welcomeView" class="welcome-view">
+    <div class="welcome-orb orb-one"></div>
+    <div class="welcome-orb orb-two"></div>
+    <div class="welcome-card glass">
+      <div class="brand brand-large"><span class="brand-mark">L</span><span>LexiBox</span></div>
+      <div class="eyebrow">SMART LEITNER LEARNING</div>
+      <h1>Remember more.<br><span>Forget less.</span></h1>
+      <p>Organize subjects into Main Decks, review on schedule, practice writing, and build long-term memory.</p>
+      <div id="profileList" class="profile-list"></div>
+      <button id="newProfileBtn" class="btn btn-primary btn-wide">+ Create profile</button>
+      <div class="privacy-note">Your data stays in this browser. Export a backup from Settings before clearing browser data or changing devices.</div>
+    </div>
+  </section>
+
+  <div id="appShell" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">L</span><span>LexiBox</span><span class="version-chip">V1</span></div>
+      <nav class="nav" id="mainNav">
+        <button class="nav-item active" data-view="dashboard"><span>⌂</span>Dashboard</button>
+        <button class="nav-item" data-view="decks"><span>▦</span>My Decks</button>
+        <button class="nav-item" data-view="review"><span>↻</span>Review</button>
+        <button class="nav-item" data-view="writing"><span>✎</span>Writing Practice</button>
+        <button class="nav-item" data-view="progress"><span>↗</span>Progress</button>
+        <button class="nav-item" data-view="settings"><span>⚙</span>Settings</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="mini-streak"><span class="flame">🔥</span><div><b id="sideStreak">0 day streak</b><small>Keep it going!</small></div></div>
+        <button id="switchProfileBtn" class="profile-chip"><span id="profileAvatar">U</span><div><b id="profileNameSide">User</b><small id="profileTopicSide">Learner</small></div><span>⌄</span></button>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="mobile-header">
+        <div class="brand"><span class="brand-mark">L</span><span>LexiBox</span></div>
+        <button id="mobileMenuBtn" class="icon-btn" aria-label="Open menu">☰</button>
+      </header>
+      <section id="dashboardView" class="view active-view"></section>
+      <section id="decksView" class="view"></section>
+      <section id="reviewView" class="view"></section>
+      <section id="writingView" class="view"></section>
+      <section id="progressView" class="view"></section>
+      <section id="settingsView" class="view"></section>
+    </main>
+  </div>
+
+  <div id="modalBackdrop" class="modal-backdrop hidden">
+    <div id="modal" class="modal"></div>
+  </div>
+
+  <input id="importFileInput" type="file" accept=".txt,.csv,.tsv" class="hidden" />
+  <input id="restoreFileInput" type="file" accept=".json" class="hidden" />
+
+  <script src="script.js"></script>
+</body>
+</html>
