@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#5b5ff0" />
-  <title>LexiBox V1 — Smart Leitner Learning</title>
+  <title>LexiBox V2.000.01 — Smart Leitner Learning</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -26,7 +26,7 @@
 
   <div id="appShell" class="app-shell hidden">
     <aside class="sidebar">
-      <div class="brand"><span class="brand-mark">L</span><span>LexiBox</span><span class="version-chip">V1</span></div>
+      <div class="brand"><span class="brand-mark">L</span><span>LexiBox</span><span class="version-chip">V2.000.01</span></div>
       <nav class="nav" id="mainNav">
         <button class="nav-item active" data-view="dashboard"><span>⌂</span>Dashboard</button>
         <button class="nav-item" data-view="decks"><span>▦</span>My Decks</button>
@@ -34,6 +34,7 @@
         <button class="nav-item" data-view="writing"><span>✎</span>Writing Practice</button>
         <button class="nav-item" data-view="progress"><span>↗</span>Progress</button>
         <button class="nav-item" data-view="settings"><span>⚙</span>Settings</button>
+        <button class="nav-item" data-view="guide"><span>ⓘ</span>Guide</button>
       </nav>
       <div class="sidebar-bottom">
         <div class="mini-streak"><span class="flame">🔥</span><div><b id="sideStreak">0 day streak</b><small>Keep it going!</small></div></div>
@@ -52,6 +53,7 @@
       <section id="writingView" class="view"></section>
       <section id="progressView" class="view"></section>
       <section id="settingsView" class="view"></section>
+      <section id="guideView" class="view"></section>
     </main>
   </div>
 
